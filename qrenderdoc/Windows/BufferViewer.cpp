@@ -2035,9 +2035,12 @@ BufferViewer::BufferViewer(ICaptureContext &ctx, bool meshview, QWidget *parent)
   m_ExportCSV->setIcon(Icons::save());
   m_ExportBytes = new QAction(tr("Export to &Bytes"), this);
   m_ExportBytes->setIcon(Icons::save());
+  m_ExportOBJ = new QAction(tr("Export to &OBJ"), this);
+  m_ExportOBJ->setIcon(Icons::save());
 
   m_ExportMenu->addAction(m_ExportCSV);
   m_ExportMenu->addAction(m_ExportBytes);
+  m_ExportMenu->addAction(m_ExportOBJ);
 
   m_DebugVert = new QAction(tr("&Debug this Vertex"), this);
   m_DebugVert->setIcon(Icons::wrench());
@@ -2048,6 +2051,8 @@ BufferViewer::BufferViewer(ICaptureContext &ctx, bool meshview, QWidget *parent)
                    [this] { exportData(BufferExport(BufferExport::CSV)); });
   QObject::connect(m_ExportBytes, &QAction::triggered,
                    [this] { exportData(BufferExport(BufferExport::RawBytes)); });
+  QObject::connect(m_ExportOBJ, &QAction::triggered,
+                    [this] { exportData(BufferExport(BufferExport::OBJ)); });
   QObject::connect(m_DebugVert, &QAction::triggered, this, &BufferViewer::debugVertex);
 
   QObject::connect(ui->exportDrop, &QToolButton::clicked,
@@ -2397,6 +2402,7 @@ void BufferViewer::stageRowMenu(MeshDataStage stage, QMenu *menu, const QPoint &
 
   menu->addAction(m_ExportCSV);
   menu->addAction(m_ExportBytes);
+  menu->addAction(m_ExportOBJ);
 
   menu->popup(m_CurView->viewport()->mapToGlobal(pos));
 
@@ -4014,6 +4020,8 @@ void BufferViewer::exportData(const BufferExport &params)
     filter = tr("CSV Files (*.csv)");
   else if(params.format == BufferExport::RawBytes)
     filter = tr("Binary Files (*.bin)");
+  else if (params.format == BufferExport::OBJ)
+    filter = tr("OBJ Files (*.obj)");
 
   QString filename = RDDialog::getSaveFileName(this, tr("Export buffer to bytes"), QString(),
                                                tr("%1;;All files (*)").arg(filter));
@@ -4027,6 +4035,9 @@ void BufferViewer::exportData(const BufferExport &params)
 
   if(params.format == BufferExport::CSV)
     flags |= QIODevice::Text;
+
+  if (params.format == BufferExport::OBJ)
+      flags |= QIODevice::Text;
 
   if(!f->open(flags))
   {
@@ -4236,6 +4247,139 @@ void BufferViewer::exportData(const BufferExport &params)
         }
       }
     }
+	else if (params.format == BufferExport::OBJ)
+	{
+	// otherwise we need to iterate over all the data ourselves
+	const BufferConfiguration& config = model->getConfig();
+
+	QTextStream s(f);
+
+	for (int i = 0; i < model->columnCount(); i++)
+	{
+		s << model->headerData(i, Qt::Horizontal, Qt::DisplayRole).toString();
+
+		if (i + 1 < model->columnCount())
+			s << ", ";
+	}
+
+	s << "\n";
+	
+	  if(m_MeshView || !m_IsBuffer || config.buffers[0]->size() >= m_ObjectByteSize)
+      {
+          int posx_index = -1;
+          int posy_index = -1;
+          int posz_index = -1;
+          int normalx_index = -1;
+          int normaly_index = -1;
+          int normalz_index = -1;
+          int u0_index = -1;
+          int v0_index = -1;
+
+          for (int i = 0; i < model->columnCount(); i++)
+          {
+              std::string ssss = model->headerData(i, Qt::Horizontal, Qt::DisplayRole).toString().toStdString();
+              if (ssss.find("Position.x") != std::string::npos) posx_index = i;
+              if (ssss.find("Position.y") != std::string::npos) posx_index = i;
+              if (ssss.find("Position.z") != std::string::npos) posx_index = i;
+              if (ssss.find("Normal.x") != std::string::npos) normalx_index = i;
+              if (ssss.find("Normal.y") != std::string::npos) normaly_index = i;
+              if (ssss.find("Normal.z") != std::string::npos) normalz_index = i;
+              if (ssss.find("Texcoord.x") != std::string::npos) u0_index = i;
+              if (ssss.find("Texcoord.y") != std::string::npos) v0_index = i;
+          }
+	  }
+
+	if (m_MeshView || !m_IsBuffer || config.buffers[0]->size() >= m_ObjectByteSize)
+	{
+		// if there's no pagination to worry about, dump using the model's data()
+		for (int row = 0; row < model->rowCount(); row++)
+		{
+			for (int col = 0; col < model->columnCount(); col++)
+			{
+				s << model->data(model->index(row, col), Qt::DisplayRole).toString();
+
+				if (col + 1 < model->columnCount())
+					s << ", ";
+			}
+
+			s << "\n";
+		}
+	}
+	else
+	{
+		// write 64k rows at a time
+		ResourceId buff = m_BufferID;
+		const uint64_t chunkSize = 64 * 1024 * config.buffers[0]->stride;
+		for (uint64_t byteOffset = m_ByteOffset; byteOffset < m_ObjectByteSize; byteOffset += chunkSize)
+		{
+			// it's fine to block invoke, because this is on the export thread
+			m_Ctx.Replay().BlockInvoke([buff, &s, &config, byteOffset, chunkSize](IReplayController* r) {
+				// cache column data for the inner loop
+				QVector<CachedElData> cache;
+
+				BufferData bufferData;
+
+				bufferData.storage = r->GetBufferData(buff, byteOffset, chunkSize);
+				bufferData.stride = config.buffers[0]->stride;
+
+				size_t numRows = (bufferData.storage.size() + bufferData.stride - 1) / bufferData.stride;
+				size_t rowOffset = byteOffset / bufferData.stride;
+
+				CacheDataForIteration(cache, config.columns, config.props, { &bufferData }, 0);
+
+				// go row by row, finding the start of the row and dumping out the elements using their
+				// offset and sizes
+				for (size_t idx = 0; idx < numRows; idx++)
+				{
+					s << (rowOffset + idx) << ", ";
+
+					for (int col = 0; col < cache.count(); col++)
+					{
+						const CachedElData& d = cache[col];
+						const ShaderConstant* el = d.el;
+						const BufferElementProperties* prop = d.prop;
+
+						if (d.data)
+						{
+							const byte* data = d.data;
+							const byte* end = d.end;
+
+							data += d.stride * idx;
+
+							// only slightly wasteful, we need to fetch all variants together
+							// since some formats are packed and can't be read individually
+							QVariantList list = GetVariants(prop->format, el->type.descriptor, data, end);
+
+							for (int v = 0; v < list.count(); v++)
+							{
+								s << interpretVariant(list[v], *el, *prop);
+
+								if (v + 1 < list.count())
+									s << ", ";
+							}
+
+							if (list.empty())
+							{
+								for (int v = 0; v < d.numColumns; v++)
+								{
+									s << "---";
+
+									if (v + 1 < d.numColumns)
+										s << ", ";
+								}
+							}
+
+							if (col + 1 < cache.count())
+								s << ", ";
+						}
+					}
+
+					s << "\n";
+				}
+				});
+		}
+	}
+	}
 
     f->close();
 

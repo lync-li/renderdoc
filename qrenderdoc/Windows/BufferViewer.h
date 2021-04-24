@@ -53,6 +53,7 @@ struct BufferExport
   {
     CSV,
     RawBytes,
+    OBJ,
   };
 
   ExportFormat format;
@@ -226,6 +227,7 @@ private:
 
   QAction *m_ExportCSV = NULL;
   QAction *m_ExportBytes = NULL;
+  QAction* m_ExportOBJ = NULL;
   QAction *m_DebugVert = NULL;
 
   RDSpinBox64 *byteRangeStart = NULL;
