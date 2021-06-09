@@ -47,6 +47,16 @@ HMODULE dxcompiler = NULL;
 IDXGIFactory1Ptr factory;
 std::vector<IDXGIAdapterPtr> adapters;
 bool d3d12on7 = false;
+
+pD3DCompile dyn_D3DCompile = NULL;
+pD3DStripShader dyn_D3DStripShader = NULL;
+pD3DSetBlobPart dyn_D3DSetBlobPart = NULL;
+pD3DCreateBlob dyn_CreateBlob = NULL;
+
+PFN_D3D12_CREATE_DEVICE dyn_D3D12CreateDevice = NULL;
+
+PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE dyn_serializeRootSig;
+PFN_D3D12_SERIALIZE_ROOT_SIGNATURE dyn_serializeRootSigOld;
 };    // namespace
 
 void D3D12GraphicsTest::Prepare(int argc, char **argv)
@@ -119,6 +129,24 @@ void D3D12GraphicsTest::Prepare(int argc, char **argv)
         }
       }
     }
+
+    if(d3dcompiler)
+    {
+      dyn_D3DCompile = (pD3DCompile)GetProcAddress(d3dcompiler, "D3DCompile");
+      dyn_D3DStripShader = (pD3DStripShader)GetProcAddress(d3dcompiler, "D3DStripShader");
+      dyn_D3DSetBlobPart = (pD3DSetBlobPart)GetProcAddress(d3dcompiler, "D3DSetBlobPart");
+      dyn_CreateBlob = (pD3DCreateBlob)GetProcAddress(d3dcompiler, "D3DCreateBlob");
+    }
+
+    if(d3d12)
+    {
+      dyn_D3D12CreateDevice = (PFN_D3D12_CREATE_DEVICE)GetProcAddress(d3d12, "D3D12CreateDevice");
+
+      dyn_serializeRootSig = (PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE)GetProcAddress(
+          d3d12, "D3D12SerializeVersionedRootSignature");
+      dyn_serializeRootSigOld =
+          (PFN_D3D12_SERIALIZE_ROOT_SIGNATURE)GetProcAddress(d3d12, "D3D12SerializeRootSignature");
+    }
   }
 
   if(!d3d12)
@@ -129,6 +157,11 @@ void D3D12GraphicsTest::Prepare(int argc, char **argv)
     Avail = "d3dcompiler_XX.dll is not available";
   else if(!factory)
     Avail = "Couldn't create DXGI factory";
+  else if(!dyn_D3D12CreateDevice || !dyn_D3DCompile || !dyn_D3DStripShader || !dyn_D3DSetBlobPart ||
+          !dyn_CreateBlob)
+    Avail = "Missing required entry point";
+  else if(!dyn_serializeRootSig && !dyn_serializeRootSigOld)
+    Avail = "Missing required root signature serialize entry point";
 
   m_12On7 = d3d12on7;
 
@@ -143,6 +176,20 @@ void D3D12GraphicsTest::Prepare(int argc, char **argv)
   }
 
   m_Factory = factory;
+
+  ID3D12DevicePtr tmpdev = CreateDevice(adapters, minFeatureLevel);
+
+  if(tmpdev)
+  {
+    tmpdev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &opts, sizeof(opts));
+    tmpdev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &opts1, sizeof(opts1));
+    tmpdev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &opts2, sizeof(opts2));
+    tmpdev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &opts3, sizeof(opts3));
+    tmpdev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS4, &opts4, sizeof(opts4));
+    tmpdev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &opts5, sizeof(opts5));
+    tmpdev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS6, &opts6, sizeof(opts6));
+    tmpdev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &opts7, sizeof(opts7));
+  }
 }
 
 bool D3D12GraphicsTest::Init()
@@ -151,30 +198,9 @@ bool D3D12GraphicsTest::Init()
   if(!GraphicsTest::Init())
     return false;
 
-  // we can assume d3d12, dxgi and d3dcompiler are valid since we shouldn't be running the test if
-  // Prepare() failed
-
-  dyn_D3D12CreateDevice = (PFN_D3D12_CREATE_DEVICE)GetProcAddress(d3d12, "D3D12CreateDevice");
-
-  dyn_D3DCompile = (pD3DCompile)GetProcAddress(d3dcompiler, "D3DCompile");
-  dyn_D3DStripShader = (pD3DStripShader)GetProcAddress(d3dcompiler, "D3DStripShader");
-  dyn_D3DSetBlobPart = (pD3DSetBlobPart)GetProcAddress(d3dcompiler, "D3DSetBlobPart");
-  dyn_CreateBlob = (pD3DCreateBlob)GetProcAddress(d3dcompiler, "D3DCreateBlob");
-
-  dyn_serializeRootSig = (PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE)GetProcAddress(
-      d3d12, "D3D12SerializeVersionedRootSignature");
-  dyn_serializeRootSigOld =
-      (PFN_D3D12_SERIALIZE_ROOT_SIGNATURE)GetProcAddress(d3d12, "D3D12SerializeRootSignature");
-
   if(dyn_serializeRootSig == NULL)
   {
     TEST_WARN("Can't get D3D12SerializeVersionedRootSignature - old version of windows?");
-
-    if(dyn_serializeRootSigOld == NULL)
-    {
-      TEST_ERROR("Can't get D3D12SerializeRootSignature!");
-      return false;
-    }
   }
 
   if(debugDevice)
@@ -204,7 +230,7 @@ bool D3D12GraphicsTest::Init()
     }
   }
 
-  dev = CreateDevice(adapters, D3D_FEATURE_LEVEL_11_0);
+  dev = CreateDevice(adapters, minFeatureLevel);
   if(!dev)
     return false;
 
@@ -226,11 +252,7 @@ bool D3D12GraphicsTest::Init()
     }
   }
 
-  {
-    D3D12_COMMAND_QUEUE_DESC desc = {};
-    desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    dev->CreateCommandQueue(&desc, __uuidof(ID3D12CommandQueue), (void **)&queue);
-  }
+  PostDeviceCreate();
 
   if(!headless)
   {
@@ -238,20 +260,7 @@ bool D3D12GraphicsTest::Init()
 
     mainWindow = win;
 
-    DXGI_SWAP_CHAIN_DESC1 swapDesc = {};
-
-    swapDesc.BufferCount = backbufferCount;
-    swapDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-    swapDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
-    swapDesc.Flags = 0;
-    swapDesc.Format = backbufferFmt;
-    swapDesc.Width = screenWidth;
-    swapDesc.Height = screenHeight;
-    swapDesc.SampleDesc.Count = 1;
-    swapDesc.SampleDesc.Quality = 0;
-    swapDesc.Scaling = DXGI_SCALING_STRETCH;
-    swapDesc.Stereo = FALSE;
-    swapDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    DXGI_SWAP_CHAIN_DESC1 swapDesc = MakeSwapchainDesc();
 
     if(!d3d12on7)
     {
@@ -294,6 +303,17 @@ bool D3D12GraphicsTest::Init()
                                             D3D12_RESOURCE_STATE_PRESENT, NULL,
                                             __uuidof(ID3D12Resource), (void **)&bbTex[1]));
     }
+  }
+
+  return true;
+}
+
+void D3D12GraphicsTest::PostDeviceCreate()
+{
+  {
+    D3D12_COMMAND_QUEUE_DESC desc = {};
+    desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    dev->CreateCommandQueue(&desc, __uuidof(ID3D12CommandQueue), (void **)&queue);
   }
 
   dev->CreateFence(0, D3D12_FENCE_FLAG_SHARED, __uuidof(ID3D12Fence), (void **)&m_GPUSyncFence);
@@ -350,7 +370,7 @@ bool D3D12GraphicsTest::Init()
 
     desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     CHECK_HR(dev->CreateDescriptorHeap(&desc, __uuidof(ID3D12DescriptorHeap), (void **)&m_Clear));
-    m_CBVUAVSRV->SetName(L"UAV clear heap");
+    m_Clear->SetName(L"UAV clear heap");
   }
 
   {
@@ -392,14 +412,14 @@ bool D3D12GraphicsTest::Init()
   {
     std::string blitPixel = R"EOSHADER(
 
-Texture2D<float4> tex : register(t0);
+	Texture2D<float4> tex : register(t0);
 
-float4 main(float4 pos : SV_Position) : SV_Target0
-{
-	return tex.Load(int3(pos.xy, 0));
-}
+	float4 main(float4 pos : SV_Position) : SV_Target0
+	{
+		return tex.Load(int3(pos.xy, 0));
+	}
 
-)EOSHADER";
+	)EOSHADER";
 
     ID3DBlobPtr vsblob = Compile(D3DFullscreenQuadVertex, "main", "vs_4_0");
     ID3DBlobPtr psblob = Compile(blitPixel, "main", "ps_4_0");
@@ -435,8 +455,6 @@ float4 main(float4 pos : SV_Position) : SV_Target0
 
     infoqueue->AddStorageFilterEntries(&filter);
   }
-
-  return true;
 }
 
 HRESULT D3D12GraphicsTest::EnumAdapterByLuid(LUID luid, IDXGIAdapterPtr &pAdapter)
@@ -467,6 +485,31 @@ HRESULT D3D12GraphicsTest::EnumAdapterByLuid(LUID luid, IDXGIAdapterPtr &pAdapte
   }
 
   return E_FAIL;
+}
+
+std::vector<IDXGIAdapterPtr> D3D12GraphicsTest::GetAdapters()
+{
+  return adapters;
+}
+
+DXGI_SWAP_CHAIN_DESC1 D3D12GraphicsTest::MakeSwapchainDesc()
+{
+  DXGI_SWAP_CHAIN_DESC1 swapDesc = {};
+
+  swapDesc.BufferCount = backbufferCount;
+  swapDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+  swapDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
+  swapDesc.Flags = 0;
+  swapDesc.Format = backbufferFmt;
+  swapDesc.Width = screenWidth;
+  swapDesc.Height = screenHeight;
+  swapDesc.SampleDesc.Count = 1;
+  swapDesc.SampleDesc.Quality = 0;
+  swapDesc.Scaling = DXGI_SCALING_STRETCH;
+  swapDesc.Stereo = FALSE;
+  swapDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+
+  return swapDesc;
 }
 
 ID3D12DevicePtr D3D12GraphicsTest::CreateDevice(const std::vector<IDXGIAdapterPtr> &adaptersToTry,
@@ -974,7 +1017,8 @@ COM_SMARTPTR(IDxcBlobEncoding);
 COM_SMARTPTR(IDxcOperationResult);
 COM_SMARTPTR(IDxcBlob);
 
-ID3DBlobPtr D3D12GraphicsTest::Compile(std::string src, std::string entry, std::string profile)
+ID3DBlobPtr D3D12GraphicsTest::Compile(std::string src, std::string entry, std::string profile,
+                                       bool skipoptimise)
 {
   ID3DBlobPtr blob = NULL;
 
@@ -1019,8 +1063,16 @@ ID3DBlobPtr D3D12GraphicsTest::Compile(std::string src, std::string entry, std::
     std::vector<std::wstring> argStorage;
 
     argStorage.push_back(L"-WX");
-    argStorage.push_back(L"-O0");
-    argStorage.push_back(L"-Od");
+    if(skipoptimise)
+    {
+      argStorage.push_back(L"-O0");
+      argStorage.push_back(L"-Od");
+    }
+    else
+    {
+      argStorage.push_back(L"-Ges");
+      argStorage.push_back(L"-O1");
+    }
     argStorage.push_back(L"-Zi");
     argStorage.push_back(L"-Qembed_debug");
 
@@ -1084,11 +1136,16 @@ ID3DBlobPtr D3D12GraphicsTest::Compile(std::string src, std::string entry, std::
   {
     ID3DBlobPtr error = NULL;
 
-    HRESULT hr = dyn_D3DCompile(
-        src.c_str(), src.length(), "", NULL, NULL, entry.c_str(), profile.c_str(),
-        D3DCOMPILE_WARNINGS_ARE_ERRORS | D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION |
-            D3DCOMPILE_OPTIMIZATION_LEVEL0 | D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES,
-        0, &blob, &error);
+    UINT flags = D3DCOMPILE_WARNINGS_ARE_ERRORS | D3DCOMPILE_DEBUG |
+                 D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES;
+
+    if(skipoptimise)
+      flags |= D3DCOMPILE_SKIP_OPTIMIZATION | D3DCOMPILE_OPTIMIZATION_LEVEL0;
+    else
+      flags |= D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL0;
+
+    HRESULT hr = dyn_D3DCompile(src.c_str(), src.length(), "", NULL, NULL, entry.c_str(),
+                                profile.c_str(), flags, 0, &blob, &error);
 
     if(FAILED(hr))
     {

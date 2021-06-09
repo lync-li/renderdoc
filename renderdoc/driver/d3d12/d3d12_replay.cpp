@@ -2742,7 +2742,7 @@ rdcarray<uint32_t> D3D12Replay::GetPassEvents(uint32_t eventId)
   // store all the draw eventIDs up to the one specified at the start
   while(start)
   {
-    if(start == draw)
+    if(start->eventId >= draw->eventId)
       break;
 
     // include pass boundaries, these will be filtered out later
@@ -2878,7 +2878,8 @@ rdcarray<DebugMessage> D3D12Replay::GetDebugMessages()
 
 void D3D12Replay::BuildShader(ShaderEncoding sourceEncoding, const bytebuf &source,
                               const rdcstr &entry, const ShaderCompileFlags &compileFlags,
-                              ShaderStage type, ResourceId &id, rdcstr &errors)
+                              const rdcarray<rdcstr> &includeDirs, ShaderStage type, ResourceId &id,
+                              rdcstr &errors)
 {
   bytebuf compiledDXBC;
 
@@ -2911,13 +2912,13 @@ void D3D12Replay::BuildShader(ShaderEncoding sourceEncoding, const bytebuf &sour
 
     ID3DBlob *blob = NULL;
     errors = m_pDevice->GetShaderCache()->GetShaderBlob(hlsl.c_str(), entry.c_str(), compileFlags,
-                                                        profile.c_str(), &blob);
+                                                        includeDirs, profile.c_str(), &blob);
 
     if(m_D3D12On7 && blob == NULL && errors.contains("unrecognized compiler target"))
     {
       profile.back() = '0';
       errors = m_pDevice->GetShaderCache()->GetShaderBlob(hlsl.c_str(), entry.c_str(), compileFlags,
-                                                          profile.c_str(), &blob);
+                                                          includeDirs, profile.c_str(), &blob);
     }
 
     if(blob == NULL)
@@ -2952,7 +2953,7 @@ void D3D12Replay::BuildTargetShader(ShaderEncoding sourceEncoding, const bytebuf
   ShaderCompileFlags debugCompileFlags = DXBC::EncodeFlags(
       DXBC::DecodeFlags(compileFlags) | D3DCOMPILE_DEBUG, DXBC::GetProfile(compileFlags));
 
-  BuildShader(sourceEncoding, source, entry, debugCompileFlags, type, id, errors);
+  BuildShader(sourceEncoding, source, entry, debugCompileFlags, {}, type, id, errors);
 }
 
 void D3D12Replay::ReplaceResource(ResourceId from, ResourceId to)
@@ -3711,11 +3712,16 @@ void D3D12Replay::GetTextureData(ResourceId tex, const Subresource &sub,
   SAFE_RELEASE(tmpTexture);
 }
 
+void D3D12Replay::SetCustomShaderIncludes(const rdcarray<rdcstr> &directories)
+{
+  m_CustomShaderIncludes = directories;
+}
+
 void D3D12Replay::BuildCustomShader(ShaderEncoding sourceEncoding, const bytebuf &source,
                                     const rdcstr &entry, const ShaderCompileFlags &compileFlags,
                                     ShaderStage type, ResourceId &id, rdcstr &errors)
 {
-  BuildShader(sourceEncoding, source, entry, compileFlags, type, id, errors);
+  BuildShader(sourceEncoding, source, entry, compileFlags, m_CustomShaderIncludes, type, id, errors);
 }
 
 ResourceId D3D12Replay::ApplyCustomShader(ResourceId shader, ResourceId texid,
@@ -3922,7 +3928,7 @@ ReplayStatus D3D12_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, I
   }
 
   D3D12InitParams initParams;
-  bytebuf D3D12Core;
+  bytebuf D3D12Core, D3D12SDKLayers;
 
   uint64_t ver = D3D12InitParams::CurrentVersion;
 
@@ -3980,6 +3986,26 @@ ReplayStatus D3D12_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, I
       D3D12Core.resize((size_t)props.uncompressedSize);
       reader->Read(D3D12Core.data(), props.uncompressedSize);
 
+      RDCLOG("Got D3D12Core.dll of size %llu (decompressed from %llu)", props.uncompressedSize,
+             props.compressedSize);
+
+      RDCASSERT(reader->AtEnd());
+      delete reader;
+    }
+
+    sectionIdx = rdc->SectionIndex(SectionType::D3D12SDKLayers);
+
+    if(sectionIdx >= 0)
+    {
+      SectionProperties props = rdc->GetSectionProperties(sectionIdx);
+      reader = rdc->ReadSection(sectionIdx);
+
+      D3D12SDKLayers.resize((size_t)props.uncompressedSize);
+      reader->Read(D3D12SDKLayers.data(), props.uncompressedSize);
+
+      RDCLOG("Got D3D12SDKLayers.dll of size %llu (decompressed from %llu)", props.uncompressedSize,
+             props.compressedSize);
+
       RDCASSERT(reader->AtEnd());
       delete reader;
     }
@@ -3988,7 +4014,7 @@ ReplayStatus D3D12_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, I
   if(initParams.MinimumFeatureLevel < D3D_FEATURE_LEVEL_11_0)
     initParams.MinimumFeatureLevel = D3D_FEATURE_LEVEL_11_0;
 
-  D3D12_PrepareReplaySDKVersion(initParams.SDKVersion, D3D12Core, D3D12Lib);
+  D3D12_PrepareReplaySDKVersion(initParams.SDKVersion, D3D12Core, D3D12SDKLayers, D3D12Lib);
 
   if(rdc)
   {
@@ -4084,6 +4110,14 @@ ReplayStatus D3D12_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, I
            ToStr(initParams.MinimumFeatureLevel).c_str());
 
   bool shouldEnableDebugLayer = opts.apiValidation;
+
+  if(shouldEnableDebugLayer && !D3D12Core.empty() && D3D12SDKLayers.empty())
+  {
+    RDCWARN(
+        "Not enabling D3D debug layers because we captured a D3D12Core.dll but not a matching "
+        "D3D12SDKLayers.dll, so this may crash");
+    shouldEnableDebugLayer = false;
+  }
 
   if(shouldEnableDebugLayer)
   {

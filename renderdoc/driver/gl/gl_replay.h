@@ -203,6 +203,7 @@ public:
   void BuildTargetShader(ShaderEncoding sourceEncoding, const bytebuf &source, const rdcstr &entry,
                          const ShaderCompileFlags &compileFlags, ShaderStage type, ResourceId &id,
                          rdcstr &errors);
+  void SetCustomShaderIncludes(const rdcarray<rdcstr> &directories);
   void BuildCustomShader(ShaderEncoding sourceEncoding, const bytebuf &source, const rdcstr &entry,
                          const ShaderCompileFlags &compileFlags, ShaderStage type, ResourceId &id,
                          rdcstr &errors);
@@ -395,7 +396,7 @@ private:
     GLuint quadoverdrawFragShaderSPIRV;
     GLuint quadoverdrawResolveProg;
 
-    GLuint discardProg[4];
+    GLuint discardProg[3][4];
     GLuint discardPatternBuffer;
 
     ResourceId overlayTexId;

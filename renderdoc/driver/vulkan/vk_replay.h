@@ -209,10 +209,11 @@ struct VulkanPostVSData
   }
 };
 
-struct DynamicUsedBinds
+struct DynamicShaderFeedback
 {
   bool compute = false, valid = false;
   rdcarray<BindpointIndex> used;
+  rdcarray<ShaderMessage> messages;
 };
 
 enum TexDisplayFlags
@@ -372,6 +373,7 @@ public:
   void BuildTargetShader(ShaderEncoding sourceEncoding, const bytebuf &source, const rdcstr &entry,
                          const ShaderCompileFlags &compileFlags, ShaderStage type, ResourceId &id,
                          rdcstr &errors);
+  void SetCustomShaderIncludes(const rdcarray<rdcstr> &directories);
   void BuildCustomShader(ShaderEncoding sourceEncoding, const bytebuf &source, const rdcstr &entry,
                          const ShaderCompileFlags &compileFlags, ShaderStage type, ResourceId &id,
                          rdcstr &errors);
@@ -742,7 +744,7 @@ private:
 
     GPUBuffer FeedbackBuffer;
 
-    std::map<uint32_t, DynamicUsedBinds> Usage;
+    std::map<uint32_t, DynamicShaderFeedback> Usage;
   } m_BindlessFeedback;
 
   ShaderDebugData m_ShaderDebugData;

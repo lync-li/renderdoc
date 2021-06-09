@@ -353,6 +353,18 @@ ReplayStatus WrappedVulkan::Initialise(VkInitParams &params, uint64_t sectionVer
   featuresEXT.disabledValidationFeatureCount = ARRAY_COUNT(disableFeatures);
   featuresEXT.pDisabledValidationFeatures = disableFeatures;
 
+// enable this to get GPU-based validation, where available, whenever we enable API validation
+#if 0
+  if(m_ReplayOptions.apiValidation)
+  {
+    VkValidationFeatureEnableEXT enableFeatures[] = {
+        VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT,
+        VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
+    featuresEXT.enabledValidationFeatureCount = ARRAY_COUNT(enableFeatures);
+    featuresEXT.pEnabledValidationFeatures = enableFeatures;
+  }
+#endif
+
   VkValidationFlagsEXT flagsEXT = {VK_STRUCTURE_TYPE_VALIDATION_FLAGS_EXT};
   VkValidationCheckEXT disableChecks[] = {VK_VALIDATION_CHECK_SHADERS_EXT};
   flagsEXT.disabledValidationCheckCount = ARRAY_COUNT(disableChecks);
@@ -2809,9 +2821,7 @@ bool WrappedVulkan::Serialise_vkCreateDevice(SerialiserType &ser, VkPhysicalDevi
     if(availFeatures.shaderInt64)
       enabledFeatures.shaderInt64 = true;
     else
-      RDCWARN(
-          "shaderInt64 = false, feedback from bindless shader access will use less reliable "
-          "fallback.");
+      RDCWARN("shaderInt64 = false, feedback from shaders will use less reliable fallback.");
 
     if(availFeatures.shaderStorageImageWriteWithoutFormat)
       enabledFeatures.shaderStorageImageWriteWithoutFormat = true;
@@ -2835,7 +2845,16 @@ bool WrappedVulkan::Serialise_vkCreateDevice(SerialiserType &ser, VkPhysicalDevi
     if(availFeatures.fragmentStoresAndAtomics)
       enabledFeatures.fragmentStoresAndAtomics = true;
     else
-      RDCWARN("fragmentStoresAndAtomics = false, quad overdraw overlay will not be available");
+      RDCWARN(
+          "fragmentStoresAndAtomics = false, quad overdraw overlay will not be available and "
+          "feedback from shaders will not be fetched for fragment stage");
+
+    if(availFeatures.vertexPipelineStoresAndAtomics)
+      enabledFeatures.vertexPipelineStoresAndAtomics = true;
+    else
+      RDCWARN(
+          "vertexPipelineStoresAndAtomics = false, feedback from shaders will not be fetched for "
+          "vertex stages");
 
     if(availFeatures.sampleRateShading)
       enabledFeatures.sampleRateShading = true;

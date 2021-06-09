@@ -3704,7 +3704,10 @@ void TextureViewer::on_backcolorPick_clicked()
   QColor col = QColorDialog::getColor(Qt::black, this, tr("Choose background colour"));
 
   if(!col.isValid())
+  {
+    ui->backcolorPick->setChecked(!ui->checkerBack->isChecked());
     return;
+  }
 
   col = col.toRgb();
   m_TexDisplay.backgroundColor = FloatVector(col.redF(), col.greenF(), col.blueF(), 1.0f);
@@ -4323,11 +4326,21 @@ void TextureViewer::reloadCustomShaders(const QString &filter)
 
         fileHandle.close();
 
+        rdcarray<rdcstr> dirs;
+
+        for(QDir d : getShaderDirectories())
+        {
+          if(d.exists())
+            dirs.push_back(d.absolutePath());
+        }
+
         m_CustomShaders[key] = ResourceId();
         m_CustomShadersBusy.push_back(key);
         m_Ctx.Replay().AsyncInvoke(
-            [this, fn, key, shaderBytes, encoding, errors](IReplayController *r) {
+            [this, fn, dirs, key, shaderBytes, encoding, errors](IReplayController *r) {
               rdcstr buildErrors;
+
+              r->SetCustomShaderIncludes(dirs);
 
               ResourceId id;
               rdctie(id, buildErrors) = r->BuildCustomShader(
@@ -4525,16 +4538,24 @@ void TextureViewer::on_customEdit_clicked()
       // Save Callback
       [thisPointer, key, filename, path](ICaptureContext *ctx, IShaderViewer *viewer, ResourceId,
                                          ShaderStage, ShaderEncoding, ShaderCompileFlags, rdcstr,
-                                         bytebuf bytes) {
+                                         bytebuf) {
         {
           // don't trigger a full refresh
           if(thisPointer)
             thisPointer->m_CustomShaderWriteTime = thisPointer->m_CustomShaderTimer.elapsed();
 
+          rdcstrpairs files = viewer->GetCurrentFileContents();
+
+          if(files.size() != 1)
+            qCritical() << "Unexpected number of files in custom shader viewer" << files.count();
+
+          if(files.empty())
+            return;
+
           QFile fileHandle(path);
           if(fileHandle.open(QFile::WriteOnly | QIODevice::Truncate | QIODevice::Text))
           {
-            fileHandle.write(QByteArray(bytes));
+            fileHandle.write(files[0].second.c_str(), files[0].second.size());
             fileHandle.close();
 
             // watcher doesn't trigger on internal modifications

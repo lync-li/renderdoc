@@ -1164,6 +1164,7 @@ bool WrappedVulkan::Serialise_vkEndCommandBuffer(SerialiserType &ser, VkCommandB
           {
             ResourceId id = it->first;
             ImageState &endState = it->second;
+            endState.SetOverlay();
             LockedConstImageStateRef current = FindConstImageState(id);
             if(!current)
             {
@@ -2536,6 +2537,11 @@ bool WrappedVulkan::Serialise_vkCmdEndRenderPass2(SerialiserType &ser, VkCommand
     {
       ObjDisp(commandBuffer)->CmdEndRenderPass2(Unwrap(commandBuffer), &unwrappedEndInfo);
 
+      // fetch any queued indirect readbacks here
+      for(const VkIndirectRecordData &indirectcopy :
+          m_BakedCmdBufferInfo[m_LastCmdBufferID].indirectCopies)
+        ExecuteIndirectReadback(commandBuffer, indirectcopy);
+
       rdcarray<VkImageMemoryBarrier> imgBarriers = GetImplicitRenderPassBarriers(~0U);
 
       GetResourceManager()->RecordBarriers(m_BakedCmdBufferInfo[m_LastCmdBufferID].imageStates,
@@ -3492,8 +3498,10 @@ bool WrappedVulkan::Serialise_vkCmdPipelineBarrier(
           const VkImageMemoryBarrier &b = pImageMemoryBarriers[i];
           if(b.image != VK_NULL_HANDLE && b.oldLayout == VK_IMAGE_LAYOUT_UNDEFINED)
           {
+            VkImageLayout newLayout = b.newLayout;
+            SanitiseNewImageLayout(newLayout);
             GetDebugManager()->FillWithDiscardPattern(
-                commandBuffer, DiscardType::UndefinedTransition, b.image, b.newLayout,
+                commandBuffer, DiscardType::UndefinedTransition, b.image, newLayout,
                 b.subresourceRange, {{0, 0}, {65536, 65536}});
           }
         }

@@ -587,6 +587,10 @@ FloatVector HighlightCache::InterpretVertex(const byte *data, uint32_t vert, con
 {
   FloatVector ret(0.0f, 0.0f, 0.0f, 1.0f);
 
+  if(cfg.position.format.compType == CompType::UInt ||
+     cfg.position.format.compType == CompType::SInt || cfg.position.format.compCount == 4)
+    ret.w = 0.0f;
+
   if(useidx && idxData)
   {
     if(vert >= (uint32_t)indices.size())
@@ -623,6 +627,10 @@ FloatVector HighlightCache::InterpretVertex(const byte *data, uint32_t vert,
   if(data + fmt.ElementSize() > end)
   {
     valid = false;
+
+    if(fmt.compType == CompType::UInt || fmt.compType == CompType::SInt || fmt.compCount == 4)
+      return FloatVector(0.0f, 0.0f, 0.0f, 0.0f);
+
     return FloatVector(0.0f, 0.0f, 0.0f, 1.0f);
   }
 
@@ -1276,13 +1284,19 @@ bytebuf GetDiscardPattern(DiscardType type, const ResourceFormat &fmt, uint32_t 
     ret.resize(rowPitch * DiscardPatternHeight);
     uint32_t *out = (uint32_t *)ret.data();
 
+    uint32_t minVal = 0;
+    uint32_t maxVal = 0xffffffff;
+
+    if(fmt.compType == CompType::UInt)
+      maxVal = (127u << 0) | (127u << 10) | (127u << 20) | (3u << 30);
+
     for(int yi = 0; yi < (int)DiscardPatternHeight; yi++)
     {
       int y = invert ? DiscardPatternHeight - 1 - yi : yi;
       for(int x = 0; x < (int)DiscardPatternWidth; x++)
       {
         char c = pattern.c_str()[y * DiscardPatternWidth + x];
-        *(out++) = (c == '#') ? 0xffffffff : 0x00000000;
+        *(out++) = (c == '#') ? maxVal : minVal;
       }
       out += (rowPitch - tightPitch);
     }

@@ -57,7 +57,16 @@
 %rename("AddChild") "SDObject::DuplicateAndAddChild";
 
 %begin %{
-  #undef slots
+#undef slots
+
+#ifndef SWIG_GENERATED
+#define SWIG_GENERATED
+#endif
+
+// we want visual assist to ignore this file, because it's a *lot* of generated code and has no
+// useful results. This macro does nothing on normal builds, but is defined to _asm { in va_stdafx.h
+#define VA_IGNORE_REST_OF_FILE
+VA_IGNORE_REST_OF_FILE
 %}
 
 %{
@@ -360,6 +369,7 @@ TEMPLATE_ARRAY_INSTANTIATE(rdcarray, LineColumnInfo)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderCompileFlag)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderConstant)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderDebugState)
+TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderMessage)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderResource)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderSampler)
 TEMPLATE_ARRAY_INSTANTIATE(rdcarray, ShaderSourceFile)

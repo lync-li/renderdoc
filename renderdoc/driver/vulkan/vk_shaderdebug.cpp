@@ -444,21 +444,20 @@ public:
 
     if(location < location_inputs.size())
     {
-      const uint32_t typeSize = VarTypeByteSize(var.type);
       if(var.rows == 1)
       {
         if(component + var.columns > 4)
           RDCERR("Unexpected component %u for column count %u", component, var.columns);
 
         for(uint8_t c = 0; c < var.columns; c++)
-          copyComp(var, c, location_inputs[location], component + c, var.type);
+          copyComp(var, c, location_inputs[location], component + c);
       }
       else
       {
         RDCASSERTEQUAL(component, 0);
         for(uint8_t r = 0; r < var.rows; r++)
           for(uint8_t c = 0; c < var.columns; c++)
-            copyComp(var, r * var.columns + c, location_inputs[location + c], r, var.type);
+            copyComp(var, r * var.columns + c, location_inputs[location + c], r);
       }
       return;
     }
@@ -486,16 +485,21 @@ public:
 
       DerivativeDeltas ret;
 
+      ret.ddxcoarse.type = type;
+      ret.ddxfine.type = type;
+      ret.ddycoarse.type = type;
+      ret.ddyfine.type = type;
+
       RDCASSERT(component < 4, component);
 
       // rebase from component into [0]..
 
       for(uint32_t src = component, dst = 0; src < 4; src++, dst++)
       {
-        copyComp(ret.ddxcoarse, dst, deriv.ddxcoarse, src, type);
-        copyComp(ret.ddxfine, dst, deriv.ddxfine, src, type);
-        copyComp(ret.ddycoarse, dst, deriv.ddycoarse, src, type);
-        copyComp(ret.ddyfine, dst, deriv.ddyfine, src, type);
+        copyComp(ret.ddxcoarse, dst, deriv.ddxcoarse, src);
+        copyComp(ret.ddxfine, dst, deriv.ddxfine, src);
+        copyComp(ret.ddycoarse, dst, deriv.ddycoarse, src);
+        copyComp(ret.ddyfine, dst, deriv.ddyfine, src);
       }
 
       return ret;
@@ -3031,24 +3035,6 @@ static void CreatePSInputFetcher(rdcarray<uint32_t> &fragspv, uint32_t &structSt
     editor.AddCapability(rdcspv::Capability::SampleRateShading);
   }
 
-  // add our inputs to the entry point's ID list. Since we're expanding the list we have to copy,
-  // erase, and insert. Modifying in-place doesn't support expanding
-  if(!addedInputs.empty())
-  {
-    rdcspv::Iter it = editor.GetEntry(entryID);
-
-    // this copies into the helper struct
-    rdcspv::OpEntryPoint entry(it);
-
-    // add our IDs
-    entry.iface.append(addedInputs);
-
-    // erase the old one
-    editor.Remove(it);
-
-    editor.AddOperation(it, entry);
-  }
-
   rdcspv::Id PSInput;
 
   enum Variant
@@ -3257,6 +3243,8 @@ static void CreatePSInputFetcher(rdcarray<uint32_t> &fragspv, uint32_t &structSt
       PSHitRTArray,
   });
 
+  rdcspv::Id ssboVar;
+
   {
     editor.SetName(bufBase, "__rd_HitStorage");
 
@@ -3274,7 +3262,6 @@ static void CreatePSInputFetcher(rdcarray<uint32_t> &fragspv, uint32_t &structSt
   }
 
   rdcspv::Id bufptrtype;
-  rdcspv::Id ssboVar;
   rdcspv::Id addressConstant;
 
   if(storageMode == Binding)
@@ -3334,7 +3321,6 @@ static void CreatePSInputFetcher(rdcarray<uint32_t> &fragspv, uint32_t &structSt
 
     // add capabilities
     editor.AddCapability(rdcspv::Capability::PhysicalStorageBufferAddresses);
-    editor.AddCapability(rdcspv::Capability::Int64);
 
     // declare the address constant which we will specialise later. There is a chicken-and-egg where
     // this function determines how big the buffer needs to be so instead of hardcoding the address
@@ -3353,6 +3339,8 @@ static void CreatePSInputFetcher(rdcarray<uint32_t> &fragspv, uint32_t &structSt
     }
     else
     {
+      editor.AddCapability(rdcspv::Capability::Int64);
+
       addressConstant =
           editor.AddSpecConstantImmediate<uint64_t>(0ULL, (uint32_t)InputSpecConstant::Address);
     }
@@ -3361,6 +3349,27 @@ static void CreatePSInputFetcher(rdcarray<uint32_t> &fragspv, uint32_t &structSt
 
     // struct is block decorated
     editor.AddDecoration(rdcspv::OpDecorate(bufBase, rdcspv::Decoration::Block));
+  }
+
+  if(editor.EntryPointAllGlobals())
+    addedInputs.push_back(ssboVar);
+
+  // add our inputs to the entry point's ID list. Since we're expanding the list we have to copy,
+  // erase, and insert. Modifying in-place doesn't support expanding
+  if(!addedInputs.empty())
+  {
+    rdcspv::Iter it = editor.GetEntry(entryID);
+
+    // this copies into the helper struct
+    rdcspv::OpEntryPoint entry(it);
+
+    // add our IDs
+    entry.iface.append(addedInputs);
+
+    // erase the old one
+    editor.Remove(it);
+
+    editor.AddOperation(it, entry);
   }
 
   rdcspv::Id float4InPtr =
@@ -3866,7 +3875,30 @@ ShaderDebugTrace *VulkanReplay::DebugVertex(uint32_t eventId, uint32_t vertid, u
         }
         else
         {
-          var.type = VarType::Float;
+          var.type = VarType::UInt;
+
+          if(fmt.compType == CompType::UInt)
+          {
+            if(fmt.compByteWidth == 1)
+              var.type = VarType::UByte;
+            else if(fmt.compByteWidth == 2)
+              var.type = VarType::UShort;
+            else if(fmt.compByteWidth == 4)
+              var.type = VarType::UInt;
+            else if(fmt.compByteWidth == 8)
+              var.type = VarType::ULong;
+          }
+          else if(fmt.compType == CompType::SInt)
+          {
+            if(fmt.compByteWidth == 1)
+              var.type = VarType::SByte;
+            else if(fmt.compByteWidth == 2)
+              var.type = VarType::SShort;
+            else if(fmt.compByteWidth == 4)
+              var.type = VarType::SInt;
+            else if(fmt.compByteWidth == 8)
+              var.type = VarType::SLong;
+          }
 
           RDCASSERTEQUAL(fmt.compByteWidth, VarTypeByteSize(var.type));
           memcpy(var.value.u8v.data(), data.data(), fmt.compByteWidth * fmt.compCount);
@@ -4527,6 +4559,15 @@ ShaderDebugTrace *VulkanReplay::DebugPixel(uint32_t eventId, uint32_t x, uint32_
       rdcspv::DebugAPIWrapper::DerivativeDeltas &deriv =
           builtin ? apiWrapper->builtin_derivatives[param.systemValue]
                   : apiWrapper->location_derivatives[param.regIndex];
+
+      var.rows = 1;
+      var.columns = param.compCount & 0xff;
+      var.type = param.varType;
+
+      deriv.ddxcoarse = var;
+      deriv.ddycoarse = var;
+      deriv.ddxfine = var;
+      deriv.ddyfine = var;
 
       const uint32_t comp = Bits::CountTrailingZeroes(uint32_t(param.regChannelMask));
       const uint32_t elemSize = VarTypeByteSize(param.varType);

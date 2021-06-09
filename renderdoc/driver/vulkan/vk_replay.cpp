@@ -248,7 +248,7 @@ rdcarray<uint32_t> VulkanReplay::GetPassEvents(uint32_t eventId)
   // store all the draw eventIDs up to the one specified at the start
   while(start)
   {
-    if(start == draw)
+    if(start->eventId >= draw->eventId)
       break;
 
     // include pass boundaries, these will be filtered out later
@@ -1623,6 +1623,10 @@ void VulkanReplay::SavePipelineState(uint32_t eventId)
         &state.graphics.descSets, &state.compute.descSets,
     };
 
+    const DynamicShaderFeedback &usage = m_BindlessFeedback.Usage[eventId];
+
+    m_VulkanPipelineState.shaderMessages = usage.messages;
+
     for(size_t p = 0; p < ARRAY_COUNT(srcs); p++)
     {
       bool hasUsedBinds = false;
@@ -1630,7 +1634,6 @@ void VulkanReplay::SavePipelineState(uint32_t eventId)
       size_t usedBindsSize = 0;
 
       {
-        const DynamicUsedBinds &usage = m_BindlessFeedback.Usage[eventId];
         bool curCompute = (p == 1);
         if(usage.valid && usage.compute == curCompute)
         {
@@ -3820,6 +3823,10 @@ void VulkanReplay::GetTextureData(ResourceId tex, const Subresource &sub,
   }
 }
 
+void VulkanReplay::SetCustomShaderIncludes(const rdcarray<rdcstr> &directories)
+{
+}
+
 void VulkanReplay::BuildCustomShader(ShaderEncoding sourceEncoding, const bytebuf &source,
                                      const rdcstr &entry, const ShaderCompileFlags &compileFlags,
                                      ShaderStage type, ResourceId &id, rdcstr &errors)
@@ -4179,6 +4186,10 @@ ReplayStatus Vulkan_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, 
   // OBS's layer causes crashes, disable it too.
   Process::RegisterEnvironmentModification(
       EnvironmentModification(EnvMod::Set, EnvSep::NoSep, "DISABLE_VULKAN_OBS_CAPTURE", "1"));
+
+  // OverWolf is some shitty software that forked OBS and changed the layer value
+  Process::RegisterEnvironmentModification(
+      EnvironmentModification(EnvMod::Set, EnvSep::NoSep, "DISABLE_VULKAN_OW_OBS_CAPTURE", "1"));
 
   // mesa device select layer crashes when it calls GPDP2 inside vkCreateInstance, which fails on
   // the current loader.
